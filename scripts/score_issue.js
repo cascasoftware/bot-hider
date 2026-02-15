@@ -6,6 +6,11 @@ const issueNumber = Number(process.env.ISSUE_NUMBER || "0");
 const issueBodyRaw = process.env.ISSUE_BODY || "";
 const issueAuthor = process.env.ISSUE_AUTHOR || "unknown";
 
+const LLM_API_KEY = process.env.LLM_API_KEY || "";   // put in GitHub Secrets
+const LLM_MODEL = process.env.LLM_MODEL || "llama-3.1-8b-instant";
+const LLM_OPT_IN = String(process.env.LLM_OPT_IN || "true").toLowerCase() === "true";
+const LLM_MAX_DELTA = Number(process.env.LLM_MAX_DELTA || "20");
+
 if (!token) throw new Error("Missing GITHUB_TOKEN");
 if (!repoFull) throw new Error("Missing GITHUB_REPOSITORY");
 if (!issueNumber) throw new Error("Missing ISSUE_NUMBER");
@@ -14,6 +19,7 @@ const [owner, repo] = repoFull.split("/");
 
 // ===== Rules runner (modular scoring) =====
 const runRules = require("./rules");
+const { groqBotCheck, groqDeltaScore } = require("./llm_groq");
 
 // ===== Config =====
 const SCORE_THRESHOLD = 50;
@@ -148,7 +154,7 @@ async function putRepoFileWithRetry(path, transformFn, messageFn) {
 }
 
 // ===== Scoring =====
-function scoreReport(r) {
+async function scoreReport(r) {
   if (!r || r.type !== "bot_report" || r.platform !== "reddit") {
     return {
       score: 0,
@@ -157,14 +163,31 @@ function scoreReport(r) {
     };
   }
 
-  const { score, reasons } = runRules(r);
-  const capped = clamp(Number(score) || 0, 0, 100);
+  const base = runRules(r);
+  let capped = clamp(Number(base.score) || 0, 0, 100);
+  const reasons = Array.isArray(base.reasons) ? base.reasons.slice() : [];
+
+  // Optional Groq enrichment
+  if (LLM_OPT_IN) {
+    const llm = await groqBotCheck(r, { apiKey: LLM_API_KEY, model: LLM_MODEL });
+
+    if (llm.ok) {
+      const delta = groqDeltaScore(llm, LLM_MAX_DELTA);
+      capped = clamp(capped + delta, 0, 100);
+      reasons.push(`Groq: +${delta} (bot_likelihood=${llm.bot_likelihood.toFixed(2)}, confidence=${llm.confidence.toFixed(2)})`);
+      for (const rr of llm.reasons) reasons.push(`Groq reason: ${rr}`);
+    } else {
+      reasons.push(`Groq skipped: ${llm.error}`);
+    }
+  } else {
+    reasons.push("Groq skipped: LLM_OPT_IN=false");
+  }
 
   let verdict = "low";
   if (capped >= 70) verdict = "high";
   else if (capped >= 40) verdict = "medium";
 
-  return { score: capped, verdict, reasons: Array.isArray(reasons) ? reasons : [] };
+  return { score: capped, verdict, reasons };
 }
 
 function buildCommentMarkdown(payload, result) {
@@ -255,7 +278,7 @@ function upsertBlacklistEntry(users, username, score) {
   }
 
   // 2) Score
-  const result = scoreReport(payload);
+  const result = await scoreReport(payload);
 
   // 3) Comment on issue
   const commentBody = buildCommentMarkdown(payload || {}, result);
