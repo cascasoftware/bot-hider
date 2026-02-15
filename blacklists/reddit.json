@@ -1,6 +1,35 @@
 {
-  "version": 1,
+  "version": 2,
   "platform": "reddit",
-  "updated_utc": "2026-02-15T12:00:00Z",
-  "users": ["Binspin63", "SomeBotAccount", "kataraangz", "MoralLogs"]
+  "updated_utc": "2026-02-15T16:08:21.233Z",
+  "users": [
+    {
+      "u": "binspin63",
+      "score": null,
+      "first_seen_utc": null,
+      "last_seen_utc": null,
+      "count": 1
+    },
+    {
+      "u": "kataraangz",
+      "score": null,
+      "first_seen_utc": null,
+      "last_seen_utc": null,
+      "count": 1
+    },
+    {
+      "u": "morallogs",
+      "score": null,
+      "first_seen_utc": null,
+      "last_seen_utc": null,
+      "count": 1
+    },
+    {
+      "u": "somebotaccount",
+      "score": 65,
+      "first_seen_utc": "2026-02-15T16:08:21.233Z",
+      "last_seen_utc": "2026-02-15T16:08:21.233Z",
+      "count": 2
+    }
+  ]
 }
