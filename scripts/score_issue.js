@@ -1,4 +1,10 @@
+console.log("RBH: score_issue.js starting");
+console.log("RBH: cwd=", process.cwd());
+console.log("RBH: node=", process.version);
+
+console.log("RBH: loading rules...");
 const runRules = require("./rules");
+console.log("RBH: rules loaded");
 
 function scoreReport(r) {
   if (!r || r.type !== "bot_report" || r.platform !== "reddit") {
