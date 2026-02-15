@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Bot Hider",
+  "version": "0.1.0",
+  "description": "Minimise, mark, or hide bot accounts across platforms (Reddit first).",
+
+  "permissions": [
+    "storage"
+  ],
+
+  "host_permissions": [
+    "https://www.reddit.com/*",
+    "https://old.reddit.com/*",
+    "https://raw.githubusercontent.com/*"
+  ],
+
+  "action": {
+    "default_title": "Bot Hider",
+    "default_popup": "popup.html"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.reddit.com/*",
+        "https://old.reddit.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

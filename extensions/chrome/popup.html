@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Bot Hider</title>
+    <style>
+      body { font-family: system-ui, Arial; width: 280px; margin: 12px; }
+      h1 { font-size: 14px; margin: 0 0 10px; }
+      label { display: block; margin: 10px 0; }
+      .hint { font-size: 12px; opacity: 0.8; margin-top: 10px; }
+      .status { font-size: 12px; margin-top: 8px; }
+      .danger { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.15); }
+    </style>
+  </head>
+  <body>
+    <h1>Bot handling</h1>
+
+    <label>
+      <input type="checkbox" id="optMinimise" />
+      Minimise using Reddit collapse
+    </label>
+
+    <label>
+      <input type="checkbox" id="optRed" />
+      Red highlight + add “[BOT ACCOUNT]”
+    </label>
+
+    <div class="danger">
+      <label>
+        <input type="checkbox" id="optRemove" />
+        Remove (hide completely)
+      </label>
+      <div class="hint">Remove overrides minimise.</div>
+    </div>
+
+    <div class="status" id="status"></div>
+    <div class="hint">Some changes may need a page refresh to fully “undo”.</div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
