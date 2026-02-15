@@ -7,6 +7,11 @@
   const GITHUB_BLACKLIST_URL =
     "https://raw.githubusercontent.com/cascasoftware/bot-hider/main/blacklists/reddit.json";
 
+  // GitHub repo'nda issue açılacak adres (repo'na göre değiştir)
+  // Örn: https://github.com/<owner>/<repo>/issues/new
+  const GITHUB_ISSUES_NEW_URL =
+    "https://github.com/cascasoftware/bot-hider/issues/new";
+
   const REFRESH_HOURS = 6;
 
   const PERMANENT_BOTS = new Set(["binspin63"]);
@@ -50,6 +55,32 @@
         margin-left: 6px !important;
         font-size: 0.95em !important;
       }
+
+      /* Old reddit collapse: don't click javascript: links (CSP blocks them). */
+      .rbh-old-collapsed .child,
+      .rbh-old-collapsed .usertext-body {
+        display: none !important;
+      }
+
+      /* Manual report button */
+      .rbh-report-btn {
+        margin-left: 8px !important;
+        padding: 2px 8px !important;
+        border-radius: 999px !important;
+        border: 1px solid rgba(0,0,0,0.25) !important;
+        background: rgba(255,255,255,0.7) !important;
+        font-size: 12px !important;
+        line-height: 18px !important;
+        cursor: pointer !important;
+        user-select: none !important;
+      }
+      .rbh-report-btn:hover {
+        background: rgba(255,255,255,0.95) !important;
+      }
+      .rbh-report-btn[aria-disabled="true"] {
+        opacity: 0.6 !important;
+        cursor: not-allowed !important;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -77,6 +108,107 @@
 
   function markProcessed(el) {
     el.setAttribute("data-rbh-run", String(rulesVersion));
+  }
+
+  const userAboutCache = new Map(); // username -> { createdUtc, commentKarma, postKarma } | null
+
+  function safeText(s, max = 280) {
+    const t = (s || "").replace(/\s+/g, " ").trim();
+    return t.length > max ? t.slice(0, max) + "…" : t;
+  }
+
+  function findPermalink(el) {
+    // Old reddit
+    const a1 = el.querySelector('a[data-event-action="permalink"]');
+    if (a1?.href) return a1.href;
+
+    const a2 = el.querySelector("a.bylink");
+    if (a2?.href) return a2.href;
+
+    const a3 = el.querySelector("time a");
+    if (a3?.href) return a3.href;
+
+    // New reddit
+    const a4 =
+      el.querySelector('a[data-testid="comment_timestamp"]') ||
+      el.querySelector('a[href*="/comments/"][href*="/"]');
+
+    if (a4?.href) return a4.href;
+
+    return location.href;
+  }
+
+  function extractCommentIdFromLink(url) {
+    try {
+      const u = new URL(url);
+      const parts = u.pathname.split("/").filter(Boolean);
+      // common: /r/sub/comments/<postId>/<slug>/<commentId>/
+      const last = parts[parts.length - 1];
+      if (last && /^[a-z0-9]+$/i.test(last)) return last;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getCommentText(el) {
+    // Old reddit
+    const old = el.querySelector(".usertext-body");
+    if (old) return safeText(old.innerText, 500);
+
+    // New reddit / shreddit
+    const newTxt =
+      el.querySelector('[data-testid="comment"]') ||
+      el.querySelector("shreddit-comment") ||
+      el;
+
+    return safeText(newTxt.innerText, 500);
+  }
+
+  async function fetchUserAbout(username) {
+    const u = normalizeUser(username);
+    if (!u) return null;
+    if (userAboutCache.has(u)) return userAboutCache.get(u);
+
+    const url = `${location.origin}/user/${encodeURIComponent(u)}/about.json?raw_json=1`;
+
+    try {
+      const res = await fetch(url, {
+        cache: "no-store",
+        credentials: "include"
+      });
+
+      if (!res.ok) {
+        userAboutCache.set(u, null);
+        return null;
+      }
+
+      const j = await res.json();
+      const data = j?.data;
+
+      const about = data
+        ? {
+            createdUtc: data.created_utc ?? null,
+            commentKarma: data.comment_karma ?? null,
+            postKarma: data.link_karma ?? null
+          }
+        : null;
+
+      userAboutCache.set(u, about);
+      return about;
+    } catch {
+      userAboutCache.set(u, null);
+      return null;
+    }
+  }
+
+  function buildIssueUrl({ title, bodyObj }) {
+    const body = JSON.stringify(bodyObj, null, 2);
+    return (
+      `${GITHUB_ISSUES_NEW_URL}` +
+      `?title=${encodeURIComponent(title)}` +
+      `&body=${encodeURIComponent(body)}`
+    );
   }
 
   /**********************
@@ -141,11 +273,59 @@
   }
 
   /**********************
+   * OLD REDDIT TOGGLE (CSP-SAFE)
+   **********************/
+  function ensureOldRedditToggle(el) {
+    const btn = el.querySelector("a.expand");
+    if (!btn) return;
+
+    if (btn.getAttribute("data-rbh-toggle") === "1") return;
+    btn.setAttribute("data-rbh-toggle", "1");
+
+    // Prevent old reddit javascript:... execution
+    btn.setAttribute("href", "#");
+    btn.style.cursor = "pointer";
+
+    const updateText = () => {
+      btn.textContent = el.classList.contains("rbh-old-collapsed") ? "[+]" : "[-]";
+    };
+
+    updateText();
+
+    btn.addEventListener(
+      "click",
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        el.classList.toggle("rbh-old-collapsed");
+        el.classList.toggle("collapsed"); // optional reddit styling
+        el.setAttribute(
+          "data-rbh-collapsed",
+          el.classList.contains("rbh-old-collapsed") ? "1" : ""
+        );
+
+        updateText();
+      },
+      true
+    );
+  }
+
+  /**********************
    * REDDIT COLLAPSE
    **********************/
   function collapseOldReddit(el) {
+    ensureOldRedditToggle(el);
+
+    // If already collapsed by us, don't re-collapse
+    if (el.classList.contains("rbh-old-collapsed")) return;
+
+    el.classList.add("rbh-old-collapsed");
+    el.classList.add("collapsed"); // optional
+    el.setAttribute("data-rbh-collapsed", "1");
+
     const btn = el.querySelector("a.expand");
-    if (btn && !el.classList.contains("collapsed")) btn.click();
+    if (btn) btn.textContent = "[+]";
   }
 
   function collapseNewReddit(el) {
@@ -183,12 +363,84 @@
     }
   }
 
+  function ensureReportButton(el, authorLink, username) {
+    if (!authorLink) return;
+
+    const existing = authorLink.parentElement?.querySelector(".rbh-report-btn");
+    if (existing) return;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rbh-report-btn";
+    btn.textContent = "Report bot";
+    btn.title = "GitHub issue aç (comment + user sinyalleriyle)";
+
+    btn.addEventListener(
+      "click",
+      async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (btn.getAttribute("aria-disabled") === "true") return;
+
+        btn.setAttribute("aria-disabled", "true");
+        const oldText = btn.textContent;
+        btn.textContent = "Loading…";
+
+        try {
+          const permalink = findPermalink(el);
+          const commentId = extractCommentIdFromLink(permalink);
+          const author = normalizeUser(username);
+
+          const about = await fetchUserAbout(author);
+
+          const nowIso = new Date().toISOString();
+          const ageDays =
+            about?.createdUtc
+              ? Math.floor((Date.now() / 1000 - about.createdUtc) / 86400)
+              : null;
+
+          const bodyObj = {
+            type: "bot_report",
+            platform: "reddit",
+            collectedAtUtc: nowIso,
+            pageUrl: location.href,
+            permalink,
+            commentId,
+            reportedUser: author || null,
+            reportedUserAgeDays: ageDays,
+            postKarma: about?.postKarma ?? null,
+            commentKarma: about?.commentKarma ?? null,
+            snippet: getCommentText(el)
+          };
+
+          const title = `Bot report: u/${author || "unknown"} (${commentId || "no-comment-id"})`;
+          const issueUrl = buildIssueUrl({ title, bodyObj });
+
+          window.open(issueUrl, "_blank", "noopener,noreferrer");
+        } finally {
+          btn.textContent = oldText;
+          btn.setAttribute("aria-disabled", "false");
+        }
+      },
+      true
+    );
+
+    authorLink.after(btn);
+  }
+
   function apply(el, authorLink, username) {
     if (!el || alreadyProcessed(el)) return;
     markProcessed(el);
 
     injectCss();
     el.classList.remove("rbh-flagged", "rbh-hidden");
+
+    // Make sure old reddit toggle always works (even for non-bots)
+    if (location.hostname.startsWith("old.")) ensureOldRedditToggle(el);
+
+    // Always allow manual reporting (istiyorsan sadece botlarda yap: if (isBot(username)) ...)
+    ensureReportButton(el, authorLink, username);
 
     if (!isBot(username)) {
       ensureLabel(authorLink, false);
