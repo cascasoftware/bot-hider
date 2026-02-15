@@ -27,4 +27,5 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.actor }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: node scripts/score_issue.js
