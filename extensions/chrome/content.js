@@ -7,14 +7,12 @@
   const GITHUB_BLACKLIST_URL =
     "https://raw.githubusercontent.com/cascasoftware/bot-hider/main/blacklists/reddit.json";
 
-  // GitHub repo'nda issue açılacak adres (repo'na göre değiştir)
-  // Örn: https://github.com/<owner>/<repo>/issues/new
   const GITHUB_ISSUES_NEW_URL =
     "https://github.com/cascasoftware/bot-hider/issues/new";
 
   const REFRESH_HOURS = 6;
 
-  const PERMANENT_BOTS = new Set(["binspin63"]);
+  const PERMANENT_BOTS = new Set([]);
 
   const SETTINGS_DEFAULTS = {
     minimise: true,
@@ -22,14 +20,17 @@
     remove: false
   };
 
-  const BOT_LABEL_TEXT = " [BOT ACCOUNT]";
   const BOT_LABEL_CLASS = "rbh-bot-label";
+  const BOT_LABEL_PREFIX = " [BOT ACCOUNT";
 
   /**********************
    * STATE
    **********************/
   let settings = { ...SETTINGS_DEFAULTS };
-  let blacklist = new Set();
+
+  // username -> { score, count, first_seen_utc, last_seen_utc }
+  let blacklist = new Map();
+
   let rulesVersion = 1;
 
   /**********************
@@ -89,13 +90,29 @@
    * UTILS
    **********************/
   function normalizeUser(u) {
-    return (u || "").trim().replace(/^u\//i, "").toLowerCase();
+    if (typeof u !== "string") return "";
+    return u.trim().replace(/^u\//i, "").toLowerCase();
+  }
+
+  function clampScore(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return null;
+    return Math.max(0, Math.min(100, Math.round(x)));
+  }
+
+  function getBotMeta(username) {
+    const u = normalizeUser(username);
+    if (!u) return null;
+
+    if (PERMANENT_BOTS.has(u)) {
+      return { score: 100, count: null, first_seen_utc: null, last_seen_utc: null, permanent: true };
+    }
+
+    return blacklist.get(u) || null;
   }
 
   function isBot(username) {
-    if (!username) return false;
-    const u = normalizeUser(username);
-    return PERMANENT_BOTS.has(u) || blacklist.has(u);
+    return !!getBotMeta(username);
   }
 
   function refreshIntervalMs() {
@@ -142,7 +159,6 @@
     try {
       const u = new URL(url);
       const parts = u.pathname.split("/").filter(Boolean);
-      // common: /r/sub/comments/<postId>/<slug>/<commentId>/
       const last = parts[parts.length - 1];
       if (last && /^[a-z0-9]+$/i.test(last)) return last;
       return null;
@@ -152,11 +168,9 @@
   }
 
   function getCommentText(el) {
-    // Old reddit
     const old = el.querySelector(".usertext-body");
     if (old) return safeText(old.innerText, 500);
 
-    // New reddit / shreddit
     const newTxt =
       el.querySelector('[data-testid="comment"]') ||
       el.querySelector("shreddit-comment") ||
@@ -239,12 +253,56 @@
   /**********************
    * BLACKLIST
    **********************/
-  const CACHE_KEY = "rbh_blacklist_cache_v1";
+  const CACHE_KEY = "rbh_blacklist_cache_v2"; // bump: now stores objects
+
+  function coerceUsersToMap(jsonUsers) {
+    // Supports:
+    // - v2: [{u,score,...}]
+    // - legacy: ["user1","user2"]
+    const map = new Map();
+
+    if (!Array.isArray(jsonUsers)) return map;
+
+    for (const item of jsonUsers) {
+      if (typeof item === "string") {
+        const u = normalizeUser(item);
+        if (u) map.set(u, { score: null, count: null, first_seen_utc: null, last_seen_utc: null });
+        continue;
+      }
+
+      if (item && typeof item === "object") {
+        const u = normalizeUser(item.u || item.user || item.username || "");
+        if (!u) continue;
+
+        map.set(u, {
+          score: clampScore(item.score),
+          count: Number.isFinite(Number(item.count)) ? Number(item.count) : null,
+          first_seen_utc: item.first_seen_utc ?? null,
+          last_seen_utc: item.last_seen_utc ?? null
+        });
+      }
+    }
+
+    return map;
+  }
 
   async function loadBlacklistCache() {
     const data = await chrome.storage.local.get(CACHE_KEY);
-    if (data[CACHE_KEY]?.users) {
-      blacklist = new Set(data[CACHE_KEY].users);
+    const cached = data[CACHE_KEY];
+
+    if (cached?.users) {
+      blacklist = coerceUsersToMap(cached.users);
+      return;
+    }
+
+    // Back-compat: older cache key (if you had v1)
+    const old = await chrome.storage.local.get("rbh_blacklist_cache_v1");
+    if (old?.rbh_blacklist_cache_v1?.users) {
+      blacklist = coerceUsersToMap(old.rbh_blacklist_cache_v1.users);
+      // migrate forward
+      await chrome.storage.local.set({
+        [CACHE_KEY]: { users: old.rbh_blacklist_cache_v1.users }
+      });
     }
   }
 
@@ -255,18 +313,38 @@
     if (!res.ok) return;
 
     const json = await res.json();
-    const users = (json.users || []).map(normalizeUser);
-    const newSet = new Set(users);
+    const newMap = coerceUsersToMap(json.users);
 
     let changed = false;
-    if (newSet.size !== blacklist.size) changed = true;
-    else for (const u of newSet) if (!blacklist.has(u)) changed = true;
+    if (newMap.size !== blacklist.size) {
+      changed = true;
+    } else {
+      for (const [u, meta] of newMap.entries()) {
+        const old = blacklist.get(u);
+        if (!old) { changed = true; break; }
+        if ((old.score ?? null) !== (meta.score ?? null)) { changed = true; break; }
+        if ((old.count ?? null) !== (meta.count ?? null)) { changed = true; break; }
+        if ((old.first_seen_utc ?? null) !== (meta.first_seen_utc ?? null)) { changed = true; break; }
+        if ((old.last_seen_utc ?? null) !== (meta.last_seen_utc ?? null)) { changed = true; break; }
+      }
+    }
 
     if (changed) {
-      blacklist = newSet;
+      blacklist = newMap;
+
+      // store objects (not just usernames)
+      const usersForCache = Array.from(newMap.entries()).map(([u, meta]) => ({
+        u,
+        score: meta.score,
+        count: meta.count,
+        first_seen_utc: meta.first_seen_utc,
+        last_seen_utc: meta.last_seen_utc
+      }));
+
       await chrome.storage.local.set({
-        [CACHE_KEY]: { users }
+        [CACHE_KEY]: { users: usersForCache }
       });
+
       rulesVersion++;
       scanPage();
     }
@@ -282,7 +360,6 @@
     if (btn.getAttribute("data-rbh-toggle") === "1") return;
     btn.setAttribute("data-rbh-toggle", "1");
 
-    // Prevent old reddit javascript:... execution
     btn.setAttribute("href", "#");
     btn.style.cursor = "pointer";
 
@@ -299,7 +376,7 @@
         e.stopPropagation();
 
         el.classList.toggle("rbh-old-collapsed");
-        el.classList.toggle("collapsed"); // optional reddit styling
+        el.classList.toggle("collapsed");
         el.setAttribute(
           "data-rbh-collapsed",
           el.classList.contains("rbh-old-collapsed") ? "1" : ""
@@ -316,12 +393,10 @@
    **********************/
   function collapseOldReddit(el) {
     ensureOldRedditToggle(el);
-
-    // If already collapsed by us, don't re-collapse
     if (el.classList.contains("rbh-old-collapsed")) return;
 
     el.classList.add("rbh-old-collapsed");
-    el.classList.add("collapsed"); // optional
+    el.classList.add("collapsed");
     el.setAttribute("data-rbh-collapsed", "1");
 
     const btn = el.querySelector("a.expand");
@@ -349,16 +424,31 @@
   /**********************
    * APPLY LOGIC
    **********************/
-  function ensureLabel(link, enable) {
+  function buildBotLabelText(username) {
+    const meta = getBotMeta(username);
+    if (!meta) return "";
+
+    const score = clampScore(meta.score);
+    const pct = score === null ? "" : ` ${score}%`;
+    return `${BOT_LABEL_PREFIX}${pct}]`;
+  }
+
+  function ensureLabel(link, enable, username) {
     if (!link) return;
     const existing = link.parentElement?.querySelector(`.${BOT_LABEL_CLASS}`);
 
-    if (enable && !existing) {
-      const span = document.createElement("span");
-      span.className = BOT_LABEL_CLASS;
-      span.textContent = BOT_LABEL_TEXT;
-      link.after(span);
-    } else if (!enable && existing) {
+    if (enable) {
+      const text = buildBotLabelText(username) || " [BOT ACCOUNT]";
+      if (!existing) {
+        const span = document.createElement("span");
+        span.className = BOT_LABEL_CLASS;
+        span.textContent = text;
+        link.after(span);
+      } else {
+        // update score if it changed
+        existing.textContent = text;
+      }
+    } else if (existing) {
       existing.remove();
     }
   }
@@ -400,6 +490,8 @@
               ? Math.floor((Date.now() / 1000 - about.createdUtc) / 86400)
               : null;
 
+          const botMeta = getBotMeta(author);
+
           const bodyObj = {
             type: "bot_report",
             platform: "reddit",
@@ -411,7 +503,13 @@
             reportedUserAgeDays: ageDays,
             postKarma: about?.postKarma ?? null,
             commentKarma: about?.commentKarma ?? null,
-            snippet: getCommentText(el)
+            snippet: getCommentText(el),
+
+            // extra: blacklist meta (if exists)
+            blacklistScore: botMeta?.score ?? null,
+            blacklistCount: botMeta?.count ?? null,
+            blacklistFirstSeenUtc: botMeta?.first_seen_utc ?? null,
+            blacklistLastSeenUtc: botMeta?.last_seen_utc ?? null
           };
 
           const title = `Bot report: u/${author || "unknown"} (${commentId || "no-comment-id"})`;
@@ -436,14 +534,12 @@
     injectCss();
     el.classList.remove("rbh-flagged", "rbh-hidden");
 
-    // Make sure old reddit toggle always works (even for non-bots)
     if (location.hostname.startsWith("old.")) ensureOldRedditToggle(el);
 
-    // Always allow manual reporting (istiyorsan sadece botlarda yap: if (isBot(username)) ...)
     ensureReportButton(el, authorLink, username);
 
     if (!isBot(username)) {
-      ensureLabel(authorLink, false);
+      ensureLabel(authorLink, false, username);
       return;
     }
 
@@ -454,9 +550,9 @@
 
     if (settings.red) {
       el.classList.add("rbh-flagged");
-      ensureLabel(authorLink, true);
+      ensureLabel(authorLink, true, username);
     } else {
-      ensureLabel(authorLink, false);
+      ensureLabel(authorLink, false, username);
     }
 
     if (settings.minimise) collapse(el);
