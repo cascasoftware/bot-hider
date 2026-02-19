@@ -63,7 +63,36 @@
         display: none !important;
       }
 
-      /* Manual report button */
+      /* Report bot - old reddit: look like a normal flat-list link */
+      .rbh-report-link {
+        background: none !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+        font: inherit !important;
+        color: inherit !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        display: inline !important;
+      }
+
+      .rbh-report-link {
+        font-weight: bold !important;
+        color: #888 !important;
+      }
+
+      .rbh-report-link:hover {
+        text-decoration: underline !important;
+      }
+
+      .rbh-report-link[aria-disabled="true"] {
+        opacity: 0.6 !important;
+        cursor: not-allowed !important;
+        text-decoration: none !important;
+      }
+
+      /* Keep the pill style ONLY if you still want it somewhere else (new reddit fallback) */
       .rbh-report-btn {
         margin-left: 8px !important;
         padding: 2px 8px !important;
@@ -75,13 +104,16 @@
         cursor: pointer !important;
         user-select: none !important;
       }
+
       .rbh-report-btn:hover {
         background: rgba(255,255,255,0.95) !important;
       }
+
       .rbh-report-btn[aria-disabled="true"] {
         opacity: 0.6 !important;
         cursor: not-allowed !important;
       }
+
     `;
     document.head.appendChild(style);
   }
@@ -453,17 +485,114 @@
     }
   }
 
+  function insertAfter(newNode, referenceNode) {
+    if (!referenceNode?.parentNode) return false;
+    referenceNode.parentNode.insertBefore(newNode, referenceNode.nextSibling);
+    return true;
+  }
+
+  function insertAfter(newNode, referenceNode) {
+    if (!referenceNode?.parentNode) return false;
+    referenceNode.parentNode.insertBefore(newNode, referenceNode.nextSibling);
+    return true;
+  }
+
   function ensureReportButton(el, authorLink, username) {
-    if (!authorLink) return;
+    // Avoid duplicates within the whole comment
+    if (el.querySelector(".rbh-report-link") || el.querySelector(".rbh-report-btn")) return;
 
-    const existing = authorLink.parentElement?.querySelector(".rbh-report-btn");
-    if (existing) return;
+    const isOld = location.hostname.startsWith("old.");
 
+    // ---------- OLD REDDIT: add a flat-list link next to "report" ----------
+    if (isOld) {
+      const list = el.querySelector("ul.flat-list.buttons");
+      if (!list) return;
+
+      const reportLi =
+        list.querySelector("li.report-button") ||
+        list.querySelector('a.reportbtn[data-event-action="report"]')?.closest("li");
+
+      const li = document.createElement("li");
+      li.className = "rbh-report-li";
+
+      const a = document.createElement("a");
+      a.href = "#";
+      a.className = "rbh-report-link";
+      a.textContent = "report bot";
+      a.title = "Open GitHub issue (with comment and user signals)";
+
+      a.addEventListener(
+        "click",
+        async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          if (a.getAttribute("aria-disabled") === "true") return;
+
+          a.setAttribute("aria-disabled", "true");
+          const oldText = a.textContent;
+          a.textContent = "loading…";
+
+          try {
+            const permalink = findPermalink(el);
+            const commentId = extractCommentIdFromLink(permalink);
+            const author = normalizeUser(username);
+
+            const about = await fetchUserAbout(author);
+
+            const nowIso = new Date().toISOString();
+            const ageDays =
+              about?.createdUtc
+                ? Math.floor((Date.now() / 1000 - about.createdUtc) / 86400)
+                : null;
+
+            const botMeta = getBotMeta(author);
+
+            const bodyObj = {
+              type: "bot_report",
+              platform: "reddit",
+              collectedAtUtc: nowIso,
+              pageUrl: location.href,
+              permalink,
+              commentId,
+              reportedUser: author || null,
+              reportedUserAgeDays: ageDays,
+              postKarma: about?.postKarma ?? null,
+              commentKarma: about?.commentKarma ?? null,
+              snippet: getCommentText(el),
+
+              blacklistScore: botMeta?.score ?? null,
+              blacklistCount: botMeta?.count ?? null,
+              blacklistFirstSeenUtc: botMeta?.first_seen_utc ?? null,
+              blacklistLastSeenUtc: botMeta?.last_seen_utc ?? null
+            };
+
+            const title = `Bot report: u/${author || "unknown"} (${commentId || "no-comment-id"})`;
+            const issueUrl = buildIssueUrl({ title, bodyObj });
+
+            window.open(issueUrl, "_blank", "noopener,noreferrer");
+          } finally {
+            a.textContent = oldText;
+            a.setAttribute("aria-disabled", "false");
+          }
+        },
+        true
+      );
+
+      li.appendChild(a);
+
+      if (reportLi) insertAfter(li, reportLi);
+      else list.appendChild(li);
+
+      return;
+    }
+
+    // ---------- NEW REDDIT / FALLBACK: keep your pill button next to author ----------
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "rbh-report-btn";
     btn.textContent = "Report bot";
-    btn.title = "GitHub issue aç (comment + user sinyalleriyle)";
+    btn.title = "Open GitHub issue (with comment and user signals)";
 
     btn.addEventListener(
       "click",
@@ -505,7 +634,6 @@
             commentKarma: about?.commentKarma ?? null,
             snippet: getCommentText(el),
 
-            // extra: blacklist meta (if exists)
             blacklistScore: botMeta?.score ?? null,
             blacklistCount: botMeta?.count ?? null,
             blacklistFirstSeenUtc: botMeta?.first_seen_utc ?? null,
@@ -524,8 +652,9 @@
       true
     );
 
-    authorLink.after(btn);
+    if (authorLink) authorLink.after(btn);
   }
+
 
   function apply(el, authorLink, username) {
     if (!el || alreadyProcessed(el)) return;
